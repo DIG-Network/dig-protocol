@@ -700,7 +700,7 @@ dependencies = [
 
 [[package]]
 name = "dig-protocol"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chia-protocol",
  "chia-sdk-client",
