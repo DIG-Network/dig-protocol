@@ -153,4 +153,67 @@ mod tests {
         let back = RespondPeersIntroducer::from_bytes(&bytes).expect("decode");
         assert!(back.peer_list.is_empty());
     }
+
+    #[test]
+    fn respond_peers_introducer_with_populated_list_round_trips() {
+        // A non-empty peer_list exercises the Vec<TimestampedPeerInfo> serialization path.
+        // TimestampedPeerInfo fields are private to chia-protocol, so build via the
+        // generated `new()` and compare by derived equality rather than field access.
+        let peers = vec![
+            TimestampedPeerInfo::new("203.0.113.7".into(), 9444, 1_700_000_000),
+            TimestampedPeerInfo::new("198.51.100.42".into(), 18444, 1_700_000_500),
+        ];
+        let resp = RespondPeersIntroducer::new(peers.clone());
+        let bytes = resp.to_bytes().expect("encode");
+        let back = RespondPeersIntroducer::from_bytes(&bytes).expect("decode");
+        assert_eq!(back.peer_list.len(), 2);
+        assert_eq!(back.peer_list, peers);
+        // A different list must NOT compare equal (guards against a trivial all-pass).
+        let other = vec![TimestampedPeerInfo::new("10.0.0.1".into(), 1, 1)];
+        assert_ne!(back.peer_list, other);
+    }
+
+    #[test]
+    fn register_peer_from_dig_message_decode_error() {
+        // Correct opcode (218) but a corrupt/truncated body: the opcode check passes
+        // (Some(..)), so the inner Streamable::from_bytes returns Err — covering the
+        // decode-error arm rather than the wrong-opcode None arm.
+        let bad = DigMessage::new(
+            DigMessageType::RegisterPeer as u8,
+            None,
+            chia_protocol::Bytes::new(vec![0xFF]), // not a valid RegisterPeer encoding
+        );
+        let result = RegisterPeer::from_dig_message(&bad);
+        let inner = result.expect("opcode matched, so we get Some(..)");
+        assert!(inner.is_err(), "corrupt body must surface a decode Err");
+    }
+
+    #[test]
+    fn register_ack_from_dig_message_decode_error() {
+        // Same path for RegisterAck (opcode 219) with an empty body — a bool needs 1 byte.
+        let bad = DigMessage::new(
+            DigMessageType::RegisterAck as u8,
+            None,
+            chia_protocol::Bytes::default(),
+        );
+        let result = RegisterAck::from_dig_message(&bad);
+        let inner = result.expect("opcode matched, so we get Some(..)");
+        assert!(
+            inner.is_err(),
+            "empty body must surface a decode Err for a bool field"
+        );
+    }
+
+    #[test]
+    fn register_ack_false_round_trips() {
+        // success == false is an explicit valid wire outcome (policy rejection).
+        let ack = RegisterAck::new(false);
+        let msg = ack.to_dig_message(Some(9)).expect("encode");
+        assert_eq!(msg.msg_type, 219);
+        assert_eq!(msg.id, Some(9));
+        let decoded = RegisterAck::from_dig_message(&msg)
+            .expect("correct opcode")
+            .expect("decode");
+        assert!(!decoded.success);
+    }
 }

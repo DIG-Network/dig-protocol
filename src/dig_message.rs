@@ -193,4 +193,71 @@ mod tests {
         assert!(DigMessage::from_bytes(&[]).is_none());
         assert!(DigMessage::from_bytes(&[20]).is_none());
     }
+
+    #[test]
+    fn truncated_id_prefix_returns_none() {
+        // has_id = 1 but the buffer ends before the 2-byte id can be read.
+        // [msg_type=20][has_id=1] then only ONE of the two id bytes present.
+        assert!(DigMessage::from_bytes(&[20, 1]).is_none());
+        assert!(DigMessage::from_bytes(&[20, 1, 0x00]).is_none());
+    }
+
+    #[test]
+    fn truncated_data_len_prefix_returns_none() {
+        // has_id = 0, so offset = 2, but fewer than 4 bytes remain for the u32 data_len.
+        assert!(DigMessage::from_bytes(&[20, 0]).is_none());
+        assert!(DigMessage::from_bytes(&[20, 0, 0x00, 0x00, 0x00]).is_none());
+
+        // With an id present (offset = 4), still short of the 4-byte data_len.
+        assert!(DigMessage::from_bytes(&[20, 1, 0x00, 0x2A, 0x00, 0x00]).is_none());
+    }
+
+    #[test]
+    fn truncated_data_returns_none() {
+        // Declares data_len = 4 but supplies only 2 payload bytes.
+        // [msg_type=20][has_id=0][data_len=00 00 00 04][data=AB CD] (missing 2 bytes)
+        let wire = [20u8, 0, 0x00, 0x00, 0x00, 0x04, 0xAB, 0xCD];
+        assert!(DigMessage::from_bytes(&wire).is_none());
+
+        // Exact-fit boundary: data_len = 2 with exactly 2 payload bytes decodes.
+        let ok = [20u8, 0, 0x00, 0x00, 0x00, 0x02, 0xAB, 0xCD];
+        let decoded = DigMessage::from_bytes(&ok).expect("exact-length payload decodes");
+        assert_eq!(decoded.data.as_ref(), &[0xAB, 0xCD]);
+    }
+
+    #[test]
+    fn zero_length_data_round_trip() {
+        // data_len = 0 is a valid wire message (e.g. RegisterPeersIntroducer body).
+        let msg = DigMessage::new(64, Some(1), Bytes::default());
+        let wire = msg.to_bytes();
+        let decoded = DigMessage::from_bytes(&wire).expect("zero-length decode");
+        assert_eq!(decoded, msg);
+        assert!(decoded.data.as_ref().is_empty());
+    }
+
+    #[test]
+    fn from_chia_message_preserves_no_id() {
+        // Exercise the id == None branch of from_chia_message + the boundary opcode 199/200.
+        let chia_msg = Message {
+            msg_type: ProtocolMessageTypes::Handshake,
+            id: None,
+            data: Bytes::default(),
+        };
+        let dig = DigMessage::from_chia_message(&chia_msg);
+        assert_eq!(dig.id, None);
+        assert!(dig.is_chia_standard());
+        assert!(!dig.is_dig_extension());
+    }
+
+    #[test]
+    fn dig_extension_boundary_at_200() {
+        // 199 is the last Chia-standard value; 200 is the first DIG extension value.
+        let below = DigMessage::new(199, None, Bytes::default());
+        assert!(below.is_chia_standard());
+        assert!(!below.is_dig_extension());
+
+        let at = DigMessage::new(200, None, Bytes::default());
+        assert!(at.is_dig_extension());
+        assert!(!at.is_chia_standard());
+    }
 }

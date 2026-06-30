@@ -238,4 +238,98 @@ mod tests {
         assert!(s.contains("RegisterPeer"));
         assert!(s.contains("218"));
     }
+
+    #[test]
+    fn unknown_dig_message_type_display_and_error() {
+        // Exercise the UnknownDigMessageType Display impl + std::error::Error blanket.
+        let err = DigMessageType::try_from(42).unwrap_err();
+        assert_eq!(err, UnknownDigMessageType(42));
+        let shown = format!("{err}");
+        assert!(shown.contains("unknown DigMessageType discriminant"));
+        assert!(shown.contains("42"));
+        // It is a real std::error::Error.
+        let _as_err: &dyn std::error::Error = &err;
+    }
+
+    #[test]
+    fn deserialize_from_unsigned_json_uses_visit_u64() {
+        // serde_json hands unsigned integers to the deserializer via u64; the visitor's
+        // visit_u64 path must narrow to u8 then dispatch to visit_u8.
+        let val: DigMessageType = serde_json::from_str("200").unwrap();
+        assert_eq!(val, DigMessageType::NewAttestation);
+
+        let val: DigMessageType = serde_json::from_str("219").unwrap();
+        assert_eq!(val, DigMessageType::RegisterAck);
+    }
+
+    #[test]
+    fn deserialize_unsigned_out_of_u8_range_errors() {
+        // 300 > u8::MAX → visit_u64's u8::try_from fails with the out-of-range message.
+        let err = serde_json::from_str::<DigMessageType>("300").unwrap_err();
+        assert!(err.to_string().contains("out of u8 range"));
+    }
+
+    #[test]
+    fn deserialize_unsigned_in_u8_range_but_unknown_errors() {
+        // 50 fits in u8 but is not a DIG discriminant → visit_u8 → try_from rejects it.
+        let err = serde_json::from_str::<DigMessageType>("50").unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("unknown DigMessageType discriminant"));
+    }
+
+    #[test]
+    fn deserialize_from_signed_json_uses_visit_i64() {
+        // A negative literal forces serde_json down the i64 path; -1 is out of u8 range.
+        let err = serde_json::from_str::<DigMessageType>("-1").unwrap_err();
+        assert!(err.to_string().contains("out of u8 range"));
+    }
+
+    #[test]
+    fn deserialize_signed_in_range_via_visitor() {
+        // Drive visit_i64 directly with an in-range value so the success arm is covered
+        // independent of how serde_json happens to classify a given literal.
+        use serde::de::{value::I64Deserializer, IntoDeserializer};
+        let de: I64Deserializer<serde::de::value::Error> = 216i64.into_deserializer();
+        let val = DigMessageType::deserialize(de).expect("216 is PlumtreeGraft");
+        assert_eq!(val, DigMessageType::PlumtreeGraft);
+    }
+
+    #[test]
+    fn deserialize_signed_out_of_range_via_visitor() {
+        // visit_i64 with a value above u8::MAX exercises the error arm explicitly.
+        use serde::de::{value::I64Deserializer, IntoDeserializer};
+        let de: I64Deserializer<serde::de::value::Error> = 9000i64.into_deserializer();
+        let err = DigMessageType::deserialize(de).expect_err("out of u8 range");
+        assert!(err.to_string().contains("out of u8 range"));
+    }
+
+    #[test]
+    fn deserialize_unsigned_in_range_via_visitor() {
+        // visit_u64 success arm with an in-range u64.
+        use serde::de::{value::U64Deserializer, IntoDeserializer};
+        let de: U64Deserializer<serde::de::value::Error> = 208u64.into_deserializer();
+        let val = DigMessageType::deserialize(de).expect("208 is ValidatorAnnounce");
+        assert_eq!(val, DigMessageType::ValidatorAnnounce);
+    }
+
+    #[test]
+    fn deserialize_wrong_type_reports_expecting() {
+        // A non-integer (string) makes the Deserializer invoke the visitor's `expecting`
+        // method when building the type-mismatch error message.
+        let err = serde_json::from_str::<DigMessageType>("\"nope\"").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("DigMessageType wire value") || msg.contains("u8 in 200..=219"));
+    }
+
+    #[test]
+    fn all_has_exactly_twenty_distinct_variants() {
+        // Guards the ALL table against drift: 20 entries, all distinct, all round-trip.
+        assert_eq!(DigMessageType::ALL.len(), 20);
+        for (i, a) in DigMessageType::ALL.iter().enumerate() {
+            for b in &DigMessageType::ALL[i + 1..] {
+                assert_ne!(a, b, "duplicate variant in ALL");
+            }
+        }
+    }
 }
