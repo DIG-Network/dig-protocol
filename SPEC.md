@@ -1,0 +1,283 @@
+# dig-protocol — Normative Specification
+
+This document is the authoritative contract for the `dig-protocol` crate: the DIG Network
+L2 P2P message layer. It specifies the wire framing, the DIG opcode namespace (200–219),
+the introducer registration messages, the re-exported Chia protocol surface, and the
+invariants an implementation MUST uphold.
+
+The key words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are to be interpreted as
+described in RFC 2119.
+
+The README covers usage; this document covers the contract.
+
+---
+
+## 1. Scope and role
+
+`dig-protocol` is the single import point for DIG P2P messaging. It:
+
+1. Re-exports the Chia protocol ecosystem (`chia-protocol`, `chia-sdk-client`,
+   `chia-ssl`, `chia-traits`, `chia_streamable_macro`) so consumers depend on
+   `dig-protocol` alone (§6).
+2. Defines the DIG opcode band **200–219** as a disjoint extension of Chia's
+   `ProtocolMessageTypes` namespace (§3).
+3. Defines `DigMessage`, a framing type that is **byte-identical on the wire** to
+   `chia_protocol::Message` but carries the opcode as a raw `u8`, so both Chia and DIG
+   opcodes can be encoded and decoded (§2).
+4. Defines the introducer wire types: the Chia-standard `RequestPeersIntroducer` /
+   `RespondPeersIntroducer` (opcodes 63/64) and the DIG-extension `RegisterPeer` /
+   `RegisterAck` (opcodes 218/219, DSC-005) (§4, §5).
+
+The crate contains no networking I/O of its own beyond what `chia-sdk-client` re-exports;
+it is a types + framing crate.
+
+## 2. Wire framing — `DigMessage`
+
+### 2.1 Byte layout (normative)
+
+Every message on a DIG P2P connection uses the following framing, identical to
+`chia_protocol::Message`'s `Streamable` encoding. All multi-byte integers are
+**big-endian**.
+
+```
+offset  size        field       meaning
+0       1           msg_type    raw u8 opcode (Chia 0–107 or DIG 200–219)
+1       1           has_id      0x00 = no id; any non-zero value = id present
+2       2 (if id)   id          u16 correlation id, big-endian
++0      4           data_len    u32 payload length, big-endian
++4      data_len    data        opaque payload bytes (encoding defined per opcode)
+```
+
+- An encoder MUST emit `has_id` as exactly `0x01` when an id is present and `0x00`
+  when absent. A decoder MUST treat any non-zero `has_id` as "id present"
+  (`from_bytes` tests `has_id != 0`).
+- `data_len` MUST equal the exact byte length of `data`.
+- A zero-length payload (`data_len == 0`) is a valid message.
+
+### 2.2 Decoding rules
+
+`DigMessage::from_bytes(&[u8]) -> Option<DigMessage>`:
+
+- MUST accept **any** `msg_type` value — no enum validation at the framing layer.
+  Opcode dispatch is the receiver's responsibility (§3.1).
+- MUST return `None` (never panic, never read out of bounds) when the buffer is
+  truncated at any point: shorter than 2 bytes, ends inside the id, ends inside
+  `data_len`, or ends before `data_len` payload bytes.
+- Trailing bytes beyond `data_len` are ignored by `from_bytes` (it reads exactly the
+  framed length).
+
+`DigMessage::to_bytes(&self) -> Vec<u8>` MUST produce the §2.1 layout exactly;
+`from_bytes(to_bytes(m)) == Some(m)` MUST hold for every `DigMessage`.
+
+### 2.3 Fields and construction
+
+```rust
+pub struct DigMessage {
+    pub msg_type: u8,        // raw wire opcode
+    pub id: Option<u16>,     // request/response correlation id
+    pub data: Bytes,         // serialized payload body
+}
+DigMessage::new(msg_type: u8, id: Option<u16>, data: Bytes) -> DigMessage
+```
+
+`DigMessage` is `Debug + Clone + PartialEq + Eq`.
+
+### 2.4 Interoperability with `chia_protocol::Message`
+
+- `DigMessage::from_chia_message(&Message) -> DigMessage` — lossless; the enum
+  discriminant becomes the raw `u8`.
+- `DigMessage::try_into_chia_message(&self) -> Option<Message>` — succeeds iff
+  `msg_type` is a valid `ProtocolMessageTypes` discriminant; MUST return `None` for
+  opcodes the Chia enum does not define. DIG-only traffic stays in `DigMessage`.
+- Classification helpers: `is_dig_extension()` is `msg_type >= 200`;
+  `is_chia_standard()` is `msg_type < 200`. The boundary is exactly 200
+  (199 is Chia-standard, 200 is DIG-extension).
+
+## 3. DIG opcode namespace — `DigMessageType` (200–219)
+
+### 3.1 The 200+ convention (normative)
+
+Chia's `ProtocolMessageTypes` occupies discriminants 0–107. DIG opcodes start at
+**200**, leaving a ≥92-value gap against future Chia additions. Because `msg_type` is an
+untyped `u8` on the wire, a receiver MUST dispatch on numeric value:
+`< 200` → Chia handler, `>= 200` → DIG handler.
+
+New DIG opcodes MUST be assigned only within the DIG band starting at 200, contiguously
+after `MAX_ASSIGNED`; an assigned opcode MUST NOT be removed, renumbered, or repurposed.
+
+### 3.2 Assigned opcodes (normative registry)
+
+`DigMessageType` is `#[repr(u8)]`; each variant maps 1:1 to its wire value.
+`DigMessageType::MAX_ASSIGNED == 219`; `DigMessageType::ALL` lists all 20 variants in
+declaration order.
+
+| Opcode | Variant | Delivery strategy | Purpose |
+|--------|---------|-------------------|---------|
+| 200 | `NewAttestation` | Plumtree eager push | Validator attestation |
+| 201 | `NewCheckpointProposal` | Plumtree eager push | Checkpoint proposal from epoch proposer |
+| 202 | `NewCheckpointSignature` | Plumtree eager push | BLS signature fragment for checkpoint aggregation |
+| 203 | `RequestCheckpointSignatures` | Unicast request | Request checkpoint signatures |
+| 204 | `RespondCheckpointSignatures` | Unicast response | Respond with checkpoint signatures |
+| 205 | `RequestStatus` | Unicast request | Request peer's chain status |
+| 206 | `RespondStatus` | Unicast response | Respond with chain status |
+| 207 | `NewCheckpointSubmission` | Plumtree eager push | Aggregated checkpoint after BLS aggregation |
+| 208 | `ValidatorAnnounce` | Broadcast flood | Validator directory announcement |
+| 209 | `RequestBlockTransactions` | Compact block | Request missing transactions by short ID |
+| 210 | `RespondBlockTransactions` | Compact block | Respond with full transactions |
+| 211 | `ReconciliationSketch` | ERLAY | Set-reconciliation sketch |
+| 212 | `ReconciliationResponse` | ERLAY | Set-reconciliation response |
+| 213 | `StemTransaction` | Dandelion++ stem | Privacy-preserving tx origination |
+| 214 | `PlumtreeLazyAnnounce` | Plumtree lazy | Hash-only announcement to non-tree peers |
+| 215 | `PlumtreePrune` | Plumtree control | Demote sender to lazy |
+| 216 | `PlumtreeGraft` | Plumtree control | Promote sender to eager |
+| 217 | `PlumtreeRequestByHash` | Plumtree control | Request full payload by hash |
+| 218 | `RegisterPeer` | Introducer | Self-registration request (DSC-005) |
+| 219 | `RegisterAck` | Introducer | Registration acknowledgement (DSC-005) |
+
+The payload encodings for opcodes 200–217 are defined by their consumers (the gossip
+layer); this crate defines the payloads for 218/219 (§4) and the framing for all.
+
+### 3.3 Conversion and error behavior
+
+- `TryFrom<u8> for DigMessageType`: MUST succeed for exactly 200..=219 and MUST fail
+  with `UnknownDigMessageType(value)` for every other `u8` (including all Chia values
+  and 220+).
+- `UnknownDigMessageType(pub u8)` implements `std::error::Error`; its `Display` is
+  `"unknown DigMessageType discriminant: {n}"`.
+- `Display` for `DigMessageType` renders `Name(value)`, e.g. `RegisterPeer(218)`.
+
+### 3.4 Serde representation (normative)
+
+`DigMessageType` serializes as the raw `u8` discriminant (e.g. JSON `216`), **not** the
+variant name. Deserialization MUST accept unsigned and signed integer inputs, narrow to
+`u8`, and reject out-of-`u8`-range values ("out of u8 range") and in-range values that
+are not assigned discriminants (the `UnknownDigMessageType` message). Non-integer inputs
+are a type error ("DigMessageType wire value (u8 in 200..=219)").
+
+## 4. Introducer registration — `RegisterPeer` / `RegisterAck` (DSC-005)
+
+DIG-extension messages by which a node advertises its P2P reachability to an introducer.
+Opcodes 218/219 do not exist in stock `ProtocolMessageTypes`, so these types travel as
+`DigMessage`, not `chia_protocol::Message`.
+
+### 4.1 `RegisterPeer` (opcode 218)
+
+Payload fields, encoded with Chia `Streamable` in declaration order:
+
+| # | Field | Type | Streamable encoding | Meaning |
+|---|-------|------|---------------------|---------|
+| 1 | `ip` | `String` | u32 BE length + UTF-8 bytes | Externally reachable IP or hostname |
+| 2 | `port` | `u16` | u16 BE | P2P listening port |
+| 3 | `node_type` | `NodeType` | u8 discriminant | Declared service role; gossip nodes register as `NodeType::FullNode` |
+
+API:
+
+- `RegisterPeer::new(ip, port, node_type)`.
+- `to_dig_message(&self, id: Option<u16>) -> Result<DigMessage, chia_traits::Error>` —
+  MUST produce a `DigMessage` with `msg_type == 218`, the given `id`, and the
+  Streamable-encoded payload.
+- `from_dig_message(&DigMessage) -> Option<Result<Self, chia_traits::Error>>` —
+  MUST return `None` when `msg_type != 218` (wrong-opcode is not a decode error);
+  otherwise `Some(Streamable::from_bytes(data))`, where a corrupt/truncated body
+  surfaces as `Some(Err(_))`.
+
+### 4.2 `RegisterAck` (opcode 219)
+
+Payload: a single `bool` (`success`), Streamable-encoded as one byte. A body that is
+empty or otherwise not a valid bool encoding MUST decode as `Some(Err(_))`.
+
+`success == false` is a **valid wire outcome** meaning the introducer rejected the
+registration by policy; it MUST NOT be treated as a transport or decode error.
+
+API mirrors §4.1: `RegisterAck::new(success)`, `to_dig_message(id)` (opcode 219),
+`from_dig_message` (`None` unless `msg_type == 219`).
+
+### 4.3 Registration exchange
+
+1. The node sends `RegisterPeer` (typically with a correlation `id`) declaring
+   `ip`, `port`, `node_type`.
+2. The introducer replies `RegisterAck { success }`, echoing the correlation semantics
+   of the framing layer (§2.1). `success == true` means the peer was accepted into the
+   introducer's directory; `false` means a policy rejection.
+
+## 5. Chia-standard introducer types (opcodes 63/64)
+
+`RequestPeersIntroducer` (opcode 63, empty body) and `RespondPeersIntroducer`
+(opcode 64, body = `Vec<TimestampedPeerInfo>` in Chia Streamable list encoding) are
+declared with `#[streamable(message)]` because their opcodes exist in stock
+`ProtocolMessageTypes`. They implement `ChiaProtocolMessage` and therefore work with
+`chia_sdk_client::Peer` request APIs directly; they MUST remain byte-compatible with
+the upstream Chia introducer protocol.
+
+## 6. Re-exported surface (public API contract)
+
+Consumers MUST be able to obtain the following through `dig_protocol::*` without
+importing the underlying crates:
+
+| Source crate | Re-exported |
+|--------------|-------------|
+| `chia-protocol` | everything (`pub use chia_protocol::*`): `Message`, `Handshake`, `ProtocolMessageTypes`, `NodeType`, `Bytes`, `TimestampedPeerInfo`, … |
+| `chia-sdk-client` (always) | `load_ssl_cert`, `ClientError`, `Network`, `Peer`, `PeerOptions`, `RateLimit`, `RateLimiter`, `RateLimits`, `V2_RATE_LIMITS` |
+| `chia-sdk-client` (TLS-gated, §7) | `Client`, `ClientState`, `Connector`; `create_native_tls_connector` / `create_rustls_connector` per feature |
+| `chia-ssl` | `ChiaCertificate` |
+| `chia-traits` | `Streamable` |
+| `chia_streamable_macro` | `streamable` (proc macro) |
+| DIG extensions | `DigMessage`, `DigMessageType`, `UnknownDigMessageType`, `RegisterPeer`, `RegisterAck`, `RequestPeersIntroducer`, `RespondPeersIntroducer` |
+
+Removing or changing the signature/semantics of any re-exported or DIG-extension item is
+a breaking change to every consumer; additions are non-breaking.
+
+## 7. Features and configuration
+
+| Feature | Default | Effect |
+|---------|---------|--------|
+| `native-tls` | off | forwards to `chia-sdk-client/native-tls`; enables `Client`, `ClientState`, `Connector`, `create_native_tls_connector` |
+| `rustls` | off | forwards to `chia-sdk-client/rustls`; enables `Client`, `ClientState`, `Connector`, `create_rustls_connector` |
+
+With neither feature the crate MUST still build; only the TLS-dependent re-exports are
+absent. Consumers select a TLS backend on `dig-protocol` rather than depending on
+`chia-sdk-client` directly.
+
+The crate has no runtime configuration; it defines types only.
+
+## 8. Security properties
+
+- **Transport security is inherited, not defined here.** Peer connections use Chia's
+  mutual-TLS model via the re-exported `chia-sdk-client` connectors and
+  `chia-ssl::ChiaCertificate`; this crate adds no cryptography of its own.
+- **Decode safety:** `DigMessage::from_bytes` and the `from_dig_message` decoders MUST
+  never panic or over-read on malformed input (truncated buffers → `None`; corrupt
+  bodies → `Err`). `#![deny(unsafe_code)]` is enforced crate-wide (Cargo `[lints.rust]`).
+- **No trust in payloads:** the framing layer imposes no semantic validation on `data`;
+  consumers MUST validate decoded payloads before acting on them.
+
+## 9. Compatibility invariants
+
+1. **Framing is frozen.** The §2.1 byte layout is byte-identical to
+   `chia_protocol::Message` and MUST NOT change.
+2. **Opcode registry is append-only.** Assigned values 200–219 (§3.2) are permanent;
+   new opcodes extend the band upward, never reuse or renumber.
+3. **Payload encodings are append-compatible per Chia Streamable rules** — the
+   `RegisterPeer`/`RegisterAck` field lists (§4) are fixed; any evolution must keep old
+   encodings decodable.
+4. **Serde form is the wire value.** `DigMessageType` JSON/serde representation stays
+   the raw integer discriminant.
+
+## 10. Conformance summary
+
+| # | Requirement | Verified by |
+|---|-------------|-------------|
+| C1 | Frame layout `[u8 type][u8 has_id][u16 id?][u32 len][data]`, big-endian, matches `chia_protocol::Message` | §2.1; round-trip + boundary tests in `src/dig_message.rs` |
+| C2 | Decoder accepts any opcode; truncated input → `None`, never panic | §2.2; truncation tests in `src/dig_message.rs` |
+| C3 | DIG band is exactly 200–219; dispatch boundary at 200 | §3.1–3.2; range tests in `src/dig_message_type.rs`, boundary test in `src/dig_message.rs` |
+| C4 | `TryFrom<u8>` rejects every non-assigned value with `UnknownDigMessageType` | §3.3; `unknown_rejected` test |
+| C5 | `DigMessageType` serde = raw u8 discriminant | §3.4; serde tests in `src/dig_message_type.rs` |
+| C6 | `RegisterPeer` = (`ip: String`, `port: u16`, `node_type: NodeType`) at opcode 218; `RegisterAck` = (`success: bool`) at 219; wrong opcode → `None`, corrupt body → `Err`; `success=false` is valid | §4; round-trip + decode-error tests in `src/introducer_wire.rs` |
+| C7 | Opcodes 63/64 remain Chia-`ProtocolMessageTypes`-compatible `#[streamable(message)]` types | §5; streamable round-trip tests |
+| C8 | Re-export surface of §6 available from `dig_protocol` alone; TLS items gated by `native-tls`/`rustls` | §6–7; `src/lib.rs` |
+| C9 | `unsafe_code` denied; no panics on malformed wire input | §8; `Cargo.toml` lints, decode tests |
+
+Peer implementations (any language) MUST reproduce C1–C6 byte-for-byte to interoperate
+with DIG nodes. The gossip layer consuming these opcodes and the introducer/relay
+services are specified in their own repositories; the DIG Network protocol documentation
+at docs.dig.net covers the network-level behavior built on these messages.
