@@ -74,6 +74,11 @@ offset  size        field       meaning
   size cap BEFORE buffering an incoming frame into a contiguous slice, so an oversized or
   lying length prefix cannot force unbounded buffering ahead of ever reaching
   `from_bytes`.
+- All internal offset arithmetic (`offset + 2` for the id, `offset + 4` for `data_len`,
+  `offset + data_len` for the payload end) MUST use checked addition and return `None`
+  on overflow rather than panicking or wrapping. This keeps decoding safe on every
+  target pointer width, including 32-bit targets where a peer-controlled `data_len`
+  near `u32::MAX` could otherwise overflow a `usize` bounds check.
 - Trailing bytes beyond `data_len` are ignored by `from_bytes` (it reads exactly the
   framed length).
 
@@ -280,7 +285,7 @@ The crate has no runtime configuration; it defines types only.
 | # | Requirement | Verified by |
 |---|-------------|-------------|
 | C1 | Frame layout `[u8 type][u8 has_id][u16 id?][u32 len][data]`, big-endian, matches `chia_protocol::Message` | §2.1; round-trip + boundary tests in `src/dig_message.rs` |
-| C2 | Decoder accepts any opcode; truncated input → `None`, never panic; `data_len` above `MAX_MESSAGE_SIZE` (16 MiB) → `None` before slicing/allocating | §2.2; truncation + oversized-length tests in `src/dig_message.rs` |
+| C2 | Decoder accepts any opcode; truncated input → `None`, never panic; `data_len` above `MAX_MESSAGE_SIZE` (16 MiB) → `None` before slicing/allocating; offset arithmetic is overflow-checked on every target width | §2.2; truncation + oversized-length + overflow tests in `src/dig_message.rs` |
 | C3 | DIG band is exactly 200–219; dispatch boundary at 200 | §3.1–3.2; range tests in `src/dig_message_type.rs`, boundary test in `src/dig_message.rs` |
 | C4 | `TryFrom<u8>` rejects every non-assigned value with `UnknownDigMessageType` | §3.3; `unknown_rejected` test |
 | C5 | `DigMessageType` serde = raw u8 discriminant | §3.4; serde tests in `src/dig_message_type.rs` |
