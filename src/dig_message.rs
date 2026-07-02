@@ -138,7 +138,72 @@ impl DigMessage {
         Some(Self { msg_type, id, data })
     }
 
+    /// Deserialize from an OWNED byte buffer, moving the payload instead of copying it.
+    ///
+    /// Identical acceptance/rejection rules to [`Self::from_bytes`] (same length checks,
+    /// same [`Self::MAX_MESSAGE_SIZE`] cap, same `None` on any malformed input) — the
+    /// only difference is that when `buf` already owns its bytes (e.g. a transport that
+    /// read the frame directly into a `Vec<u8>`), the payload is moved into the result
+    /// via `Vec::drain` instead of being copied out of a borrowed `&[u8]` with `to_vec`.
+    /// Prefer this over `from_bytes` whenever the caller already has an owned `Vec<u8>`
+    /// and does not need it afterward.
+    pub fn from_bytes_owned(mut buf: Vec<u8>) -> Option<Self> {
+        if buf.len() < 2 {
+            return None;
+        }
+        let msg_type = buf[0];
+        let has_id = buf[1];
+        let mut offset: usize = 2;
+
+        let id = if has_id != 0 {
+            let after_id = offset.checked_add(2)?;
+            if buf.len() < after_id {
+                return None;
+            }
+            let id = u16::from_be_bytes([buf[offset], buf[offset + 1]]);
+            offset = after_id;
+            Some(id)
+        } else {
+            None
+        };
+
+        let after_len = offset.checked_add(4)?;
+        if buf.len() < after_len {
+            return None;
+        }
+        let data_len = u32::from_be_bytes([
+            buf[offset],
+            buf[offset + 1],
+            buf[offset + 2],
+            buf[offset + 3],
+        ]) as usize;
+        offset = after_len;
+
+        if data_len > Self::MAX_MESSAGE_SIZE {
+            return None;
+        }
+
+        let end = offset.checked_add(data_len)?;
+        if buf.len() < end {
+            return None;
+        }
+
+        // Move just the payload range out of `buf` without copying: drain removes and
+        // yields the [offset..end) elements by value, leaving any trailing bytes (and
+        // the header bytes before offset) dropped rather than retained.
+        let data: Vec<u8> = buf.drain(offset..end).collect();
+
+        Some(Self {
+            msg_type,
+            id,
+            data: Bytes::new(data),
+        })
+    }
+
     /// Convert from a stock `chia_protocol::Message` (lossless — opcode stored as u8).
+    ///
+    /// Clones `msg.data`. Prefer [`Self::from_chia_message_owned`] when an owned
+    /// `Message` is available and does not need to be kept afterward.
     pub fn from_chia_message(msg: &Message) -> Self {
         Self {
             msg_type: msg.msg_type as u8,
@@ -147,11 +212,22 @@ impl DigMessage {
         }
     }
 
-    /// Try to convert to a stock `chia_protocol::Message`.
+    /// Convert from an OWNED stock `chia_protocol::Message`, moving `data` instead of
+    /// cloning it (lossless — opcode stored as u8).
+    pub fn from_chia_message_owned(msg: Message) -> Self {
+        Self {
+            msg_type: msg.msg_type as u8,
+            id: msg.id,
+            data: msg.data,
+        }
+    }
+
+    /// Try to convert to a stock `chia_protocol::Message`, cloning `self.data`.
     ///
     /// Fails if `msg_type` is not a valid `ProtocolMessageTypes` discriminant
     /// (i.e., DIG extension opcodes 200+ will fail here — use `DigMessage` directly
-    /// for those).
+    /// for those). Prefer [`Self::into_chia_message`] when `self` does not need to be
+    /// kept afterward.
     pub fn try_into_chia_message(&self) -> Option<Message> {
         // ProtocolMessageTypes implements Streamable; from_bytes on a single u8
         let pmt = ProtocolMessageTypes::from_bytes(&[self.msg_type]).ok()?;
@@ -159,6 +235,21 @@ impl DigMessage {
             msg_type: pmt,
             id: self.id,
             data: self.data.clone(),
+        })
+    }
+
+    /// Try to convert into a stock `chia_protocol::Message` BY VALUE, moving `self.data`
+    /// instead of cloning it.
+    ///
+    /// Same failure condition as [`Self::try_into_chia_message`]: `None` when `msg_type`
+    /// is not a valid `ProtocolMessageTypes` discriminant. On failure `self` is dropped
+    /// (its opcode was not a known Chia type, so there is nothing useful to hand back).
+    pub fn into_chia_message(self) -> Option<Message> {
+        let pmt = ProtocolMessageTypes::from_bytes(&[self.msg_type]).ok()?;
+        Some(Message {
+            msg_type: pmt,
+            id: self.id,
+            data: self.data,
         })
     }
 
@@ -198,6 +289,74 @@ mod tests {
         assert_eq!(decoded.id, None);
         assert!(decoded.is_dig_extension());
         assert!(!decoded.is_chia_standard());
+    }
+
+    #[test]
+    fn from_bytes_owned_avoids_copy_when_buffer_is_owned() {
+        // Given an owned Vec<u8> (e.g. a transport that already read the frame into its
+        // own buffer), from_bytes_owned must decode identically to from_bytes but move
+        // the payload bytes into the resulting DigMessage instead of copying them via
+        // to_vec() on a borrowed slice.
+        let msg = DigMessage::new(218, Some(7), Bytes::new(vec![9, 9, 9]));
+        let wire: Vec<u8> = msg.to_bytes();
+        let decoded = DigMessage::from_bytes_owned(wire).expect("decode");
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn from_bytes_owned_rejects_same_malformed_inputs_as_from_bytes() {
+        assert!(DigMessage::from_bytes_owned(vec![]).is_none());
+        assert!(DigMessage::from_bytes_owned(vec![20, 1]).is_none());
+
+        let mut wire = vec![1u8, 0];
+        wire.extend_from_slice(&((DigMessage::MAX_MESSAGE_SIZE as u32) + 1).to_be_bytes());
+        assert!(DigMessage::from_bytes_owned(wire).is_none());
+
+        let truncated = vec![20u8, 0, 0x00, 0x00, 0x00, 0x04, 0xAB, 0xCD];
+        assert!(DigMessage::from_bytes_owned(truncated).is_none());
+    }
+
+    #[test]
+    fn from_bytes_owned_ignores_trailing_bytes_like_from_bytes() {
+        // Parity with from_bytes: trailing bytes beyond data_len are not an error and
+        // are simply not included in the decoded payload.
+        let mut wire = vec![20u8, 0, 0x00, 0x00, 0x00, 0x02, 0xAB, 0xCD];
+        wire.extend_from_slice(&[0xEE, 0xFF]); // trailing garbage
+        let decoded = DigMessage::from_bytes_owned(wire).expect("decode");
+        assert_eq!(decoded.data.as_ref(), &[0xAB, 0xCD]);
+    }
+
+    #[test]
+    fn into_chia_message_moves_data_without_cloning() {
+        // into_chia_message consumes self by value; the resulting Message's data must
+        // equal what try_into_chia_message (the cloning, borrowing variant) would have
+        // produced, proving the by-value path is behaviourally identical.
+        let dig = DigMessage::new(20, Some(3), Bytes::new(vec![1, 2, 3, 4]));
+        let expected_data = dig.data.clone();
+        let msg = dig.into_chia_message().expect("known opcode");
+        assert_eq!(msg.msg_type, ProtocolMessageTypes::NewPeak);
+        assert_eq!(msg.id, Some(3));
+        assert_eq!(msg.data, expected_data);
+    }
+
+    #[test]
+    fn into_chia_message_rejects_unknown_opcode() {
+        let dig = DigMessage::new(250, None, Bytes::default());
+        assert!(dig.into_chia_message().is_none());
+    }
+
+    #[test]
+    fn from_chia_message_owned_moves_data_without_cloning() {
+        let chia_msg = Message {
+            msg_type: ProtocolMessageTypes::NewPeak,
+            id: Some(11),
+            data: Bytes::new(vec![7, 7, 7]),
+        };
+        let expected_data = chia_msg.data.clone();
+        let dig = DigMessage::from_chia_message_owned(chia_msg);
+        assert_eq!(dig.msg_type, 20);
+        assert_eq!(dig.id, Some(11));
+        assert_eq!(dig.data, expected_data);
     }
 
     #[test]

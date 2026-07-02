@@ -85,6 +85,15 @@ offset  size        field       meaning
 `DigMessage::to_bytes(&self) -> Vec<u8>` MUST produce the §2.1 layout exactly;
 `from_bytes(to_bytes(m)) == Some(m)` MUST hold for every `DigMessage`.
 
+`DigMessage::from_bytes_owned(buf: Vec<u8>) -> Option<DigMessage>` applies the
+identical acceptance/rejection rules as `from_bytes` (same truncation checks, same
+`MAX_MESSAGE_SIZE` cap, same overflow-checked offset arithmetic) but takes the buffer
+by value and moves the payload range out of it (via `Vec::drain`) instead of copying it
+out of a borrowed slice with `to_vec`. Callers that already own a `Vec<u8>` (e.g. a
+transport that read the frame directly into an owned buffer) SHOULD prefer this over
+`from_bytes` to avoid an extra payload copy; `from_bytes` remains the correct choice
+when only a borrowed `&[u8]` is available.
+
 ### 2.3 Fields and construction
 
 ```rust
@@ -102,10 +111,17 @@ DigMessage::MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024  // 16 MiB — see §2.2
 ### 2.4 Interoperability with `chia_protocol::Message`
 
 - `DigMessage::from_chia_message(&Message) -> DigMessage` — lossless; the enum
-  discriminant becomes the raw `u8`.
+  discriminant becomes the raw `u8`. Clones `msg.data`.
+- `DigMessage::from_chia_message_owned(Message) -> DigMessage` — same conversion,
+  taking `Message` by value and moving `data` instead of cloning it. Prefer this when
+  the source `Message` does not need to be kept afterward.
 - `DigMessage::try_into_chia_message(&self) -> Option<Message>` — succeeds iff
   `msg_type` is a valid `ProtocolMessageTypes` discriminant; MUST return `None` for
-  opcodes the Chia enum does not define. DIG-only traffic stays in `DigMessage`.
+  opcodes the Chia enum does not define. DIG-only traffic stays in `DigMessage`. Clones
+  `self.data`.
+- `DigMessage::into_chia_message(self) -> Option<Message>` — same conversion and same
+  failure condition, taking `self` by value and moving `data` instead of cloning it.
+  Prefer this when `self` does not need to be kept afterward.
 - Classification helpers: `is_dig_extension()` is `msg_type >= 200`;
   `is_chia_standard()` is `msg_type < 200`. The boundary is exactly 200
   (199 is Chia-standard, 200 is DIG-extension).
@@ -262,9 +278,11 @@ The crate has no runtime configuration; it defines types only.
 - **Transport security is inherited, not defined here.** Peer connections use Chia's
   mutual-TLS model via the re-exported `chia-sdk-client` connectors and
   `chia-ssl::ChiaCertificate`; this crate adds no cryptography of its own.
-- **Decode safety:** `DigMessage::from_bytes` and the `from_dig_message` decoders MUST
-  never panic or over-read on malformed input (truncated buffers → `None`; corrupt
-  bodies → `Err`). `#![deny(unsafe_code)]` is enforced crate-wide (Cargo `[lints.rust]`).
+- **Decode safety:** `DigMessage::from_bytes`, `DigMessage::from_bytes_owned`, and the
+  `from_dig_message` decoders MUST never panic or over-read on malformed input
+  (truncated buffers → `None`; corrupt bodies → `Err`; oversized `data_len` → `None`;
+  offset arithmetic overflow → `None`, never a panic or wrap). `#![deny(unsafe_code)]`
+  is enforced crate-wide (Cargo `[lints.rust]`).
 - **No trust in payloads:** the framing layer imposes no semantic validation on `data`;
   consumers MUST validate decoded payloads before acting on them.
 

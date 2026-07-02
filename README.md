@@ -88,15 +88,20 @@ pub struct DigMessage {
 }
 
 impl DigMessage {
+    pub const MAX_MESSAGE_SIZE: usize; // 16 MiB — data_len prefixes above this decode to None
+
     pub fn new(msg_type: u8, id: Option<u16>, data: Bytes) -> Self;
 
     // Wire codec (same layout as chia_protocol::Message)
     pub fn to_bytes(&self) -> Vec<u8>;
-    pub fn from_bytes(bytes: &[u8]) -> Option<Self>;  // None on short/malformed buffer
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self>;         // None on short/malformed/oversized buffer
+    pub fn from_bytes_owned(buf: Vec<u8>) -> Option<Self>;   // same rules; moves payload instead of copying
 
     // Interop with stock Chia Message
-    pub fn from_chia_message(msg: &Message) -> Self;                   // lossless
-    pub fn try_into_chia_message(&self) -> Option<Message>;            // None if opcode ∉ ProtocolMessageTypes
+    pub fn from_chia_message(msg: &Message) -> Self;                   // lossless, clones data
+    pub fn from_chia_message_owned(msg: Message) -> Self;              // lossless, moves data
+    pub fn try_into_chia_message(&self) -> Option<Message>;            // None if opcode ∉ ProtocolMessageTypes; clones data
+    pub fn into_chia_message(self) -> Option<Message>;                 // same, moves data
 
     // Opcode-range predicates
     pub fn is_dig_extension(&self) -> bool;   // msg_type >= 200
@@ -107,12 +112,20 @@ impl DigMessage {
 **Inputs/outputs**
 
 | Method                    | Input                    | Output                             | Failure mode                       |
-|---------------------------|--------------------------|------------------------------------|------------------------------------|
+|---------------------------|--------------------------|--------------------------------------|------------------------------------|
 | `new`                     | `u8`, `Option<u16>`, `Bytes` | `DigMessage`                   | infallible                         |
 | `to_bytes`                | `&self`                  | `Vec<u8>`                          | infallible                         |
-| `from_bytes`              | `&[u8]`                  | `Option<DigMessage>`               | `None` if truncated                |
-| `from_chia_message`       | `&Message`               | `DigMessage`                       | infallible                         |
-| `try_into_chia_message`   | `&self`                  | `Option<Message>`                  | `None` if opcode not in Chia enum  |
+| `from_bytes`              | `&[u8]`                  | `Option<DigMessage>`               | `None` if truncated or `data_len` > `MAX_MESSAGE_SIZE` |
+| `from_bytes_owned`        | `Vec<u8>`                | `Option<DigMessage>`               | same as `from_bytes`; moves payload, no copy |
+| `from_chia_message`       | `&Message`               | `DigMessage`                       | infallible; clones payload         |
+| `from_chia_message_owned` | `Message`                | `DigMessage`                       | infallible; moves payload          |
+| `try_into_chia_message`   | `&self`                  | `Option<Message>`                  | `None` if opcode not in Chia enum; clones payload |
+| `into_chia_message`       | `self`                   | `Option<Message>`                  | same as `try_into_chia_message`; moves payload |
+
+`from_bytes`/`from_bytes_owned` reject any `data_len` prefix above `MAX_MESSAGE_SIZE`
+(16 MiB) before slicing/allocating the payload. This bounds only the allocation these
+functions perform — callers MUST still enforce their own per-frame size cap at the
+transport layer before buffering an incoming frame.
 
 ---
 
@@ -338,7 +351,9 @@ match DigMessageType::try_from(msg.msg_type) {
 | `chia_traits::Error`        | `Streamable::to_bytes/from_bytes` | Malformed payload                                |
 | `ClientError`               | `chia_sdk_client`                 | TLS, handshake, IO, protocol violations          |
 
-`DigMessage::from_bytes` returns `Option<DigMessage>` (no error type) — `None` means truncated/malformed frame.
+`DigMessage::from_bytes`/`from_bytes_owned` return `Option<DigMessage>` (no error type)
+— `None` means truncated/malformed frame OR a `data_len` prefix above
+`DigMessage::MAX_MESSAGE_SIZE` (16 MiB).
 
 ---
 
