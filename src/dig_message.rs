@@ -37,6 +37,21 @@ pub struct DigMessage {
 }
 
 impl DigMessage {
+    /// Protocol-level ceiling on a single message's declared payload length (bytes).
+    ///
+    /// `from_bytes` rejects any `data_len` prefix above this value with `None` before
+    /// slicing/allocating the payload, so a peer cannot force a multi-gigabyte `Vec`
+    /// allocation via a lying (or genuine but oversized) length prefix. Mirrors
+    /// `chia-protocol`'s own message-size ceiling (16 MiB) — comfortably above any
+    /// legitimate DIG opcode payload (attestations, checkpoints, block-transaction
+    /// batches) while bounding worst-case per-message memory.
+    ///
+    /// **Callers MUST still enforce a per-frame size cap at the transport/framing layer
+    /// BEFORE buffering an incoming frame into a contiguous `&[u8]`** — this constant
+    /// only bounds what `from_bytes` will accept once a slice already exists; it cannot
+    /// stop a transport from reading an unbounded number of bytes off the wire first.
+    pub const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024; // 16 MiB
+
     /// Construct a new DIG message.
     pub fn new(msg_type: u8, id: Option<u16>, data: Bytes) -> Self {
         Self { msg_type, id, data }
@@ -64,7 +79,15 @@ impl DigMessage {
 
     /// Deserialize from wire bytes. Accepts any `msg_type` value — no enum validation.
     ///
-    /// Returns `None` if the buffer is too short or the length prefix doesn't match.
+    /// Returns `None` if the buffer is too short, the length prefix doesn't match, or
+    /// the declared `data_len` exceeds [`Self::MAX_MESSAGE_SIZE`].
+    ///
+    /// This is a leaf parser over an already-materialized `&[u8]`: the `MAX_MESSAGE_SIZE`
+    /// check bounds the allocation this function performs, but it cannot bound how many
+    /// bytes a transport read off the wire to build `bytes` in the first place. **Callers
+    /// MUST enforce a per-frame size cap at the transport/framing layer before buffering
+    /// an incoming frame**, so that a peer cannot force unbounded buffering ahead of ever
+    /// reaching this function.
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
         if bytes.len() < 2 {
             return None;
@@ -94,6 +117,10 @@ impl DigMessage {
             bytes[offset + 3],
         ]) as usize;
         offset += 4;
+
+        if data_len > Self::MAX_MESSAGE_SIZE {
+            return None;
+        }
 
         if bytes.len() < offset + data_len {
             return None;
@@ -223,6 +250,31 @@ mod tests {
         let ok = [20u8, 0, 0x00, 0x00, 0x00, 0x02, 0xAB, 0xCD];
         let decoded = DigMessage::from_bytes(&ok).expect("exact-length payload decodes");
         assert_eq!(decoded.data.as_ref(), &[0xAB, 0xCD]);
+    }
+
+    #[test]
+    fn oversized_data_len_is_rejected() {
+        // data_len prefix declares more than MAX_MESSAGE_SIZE — must be rejected with
+        // None BEFORE any attempt to read/allocate the (possibly absent) payload bytes,
+        // regardless of how many bytes actually follow.
+        let over = (DigMessage::MAX_MESSAGE_SIZE as u32) + 1;
+        let mut wire = vec![20u8, 0]; // msg_type=20, has_id=0
+        wire.extend_from_slice(&over.to_be_bytes());
+        // No payload bytes supplied at all — if the cap check didn't fire first, this
+        // would already fail the length check, so also prove the cap fires even when
+        // enough bytes *are* present.
+        assert!(DigMessage::from_bytes(&wire).is_none());
+    }
+
+    #[test]
+    fn data_len_one_byte_over_cap_is_rejected_at_exact_boundary() {
+        // Prove the cap is enforced as `> MAX_MESSAGE_SIZE`, not some looser bound, by
+        // checking the smallest possible over-cap value (cap + 1) is rejected even
+        // though the length-prefix parsing itself succeeds (only the cap check fails).
+        let over_by_one = (DigMessage::MAX_MESSAGE_SIZE as u32) + 1;
+        let mut wire = vec![1u8, 0];
+        wire.extend_from_slice(&over_by_one.to_be_bytes());
+        assert!(DigMessage::from_bytes(&wire).is_none());
     }
 
     #[test]

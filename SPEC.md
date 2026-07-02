@@ -63,6 +63,17 @@ offset  size        field       meaning
 - MUST return `None` (never panic, never read out of bounds) when the buffer is
   truncated at any point: shorter than 2 bytes, ends inside the id, ends inside
   `data_len`, or ends before `data_len` payload bytes.
+- MUST return `None` when the decoded `data_len` exceeds `DigMessage::MAX_MESSAGE_SIZE`
+  (16 MiB), checked BEFORE any bounds check against `bytes.len()` or slicing/allocating
+  the payload — a peer-controlled length prefix cannot force an allocation above this
+  ceiling. `MAX_MESSAGE_SIZE` mirrors `chia-protocol`'s own message-size limit and is
+  comfortably above any legitimate DIG opcode payload.
+- `from_bytes` is a leaf parser over an already-materialized `&[u8]`; `MAX_MESSAGE_SIZE`
+  bounds only the allocation `from_bytes` itself performs. Callers (the transport/framing
+  layer that assembles the byte slice from the wire) MUST enforce their own per-frame
+  size cap BEFORE buffering an incoming frame into a contiguous slice, so an oversized or
+  lying length prefix cannot force unbounded buffering ahead of ever reaching
+  `from_bytes`.
 - Trailing bytes beyond `data_len` are ignored by `from_bytes` (it reads exactly the
   framed length).
 
@@ -78,6 +89,7 @@ pub struct DigMessage {
     pub data: Bytes,         // serialized payload body
 }
 DigMessage::new(msg_type: u8, id: Option<u16>, data: Bytes) -> DigMessage
+DigMessage::MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024  // 16 MiB — see §2.2
 ```
 
 `DigMessage` is `Debug + Clone + PartialEq + Eq`.
@@ -268,7 +280,7 @@ The crate has no runtime configuration; it defines types only.
 | # | Requirement | Verified by |
 |---|-------------|-------------|
 | C1 | Frame layout `[u8 type][u8 has_id][u16 id?][u32 len][data]`, big-endian, matches `chia_protocol::Message` | §2.1; round-trip + boundary tests in `src/dig_message.rs` |
-| C2 | Decoder accepts any opcode; truncated input → `None`, never panic | §2.2; truncation tests in `src/dig_message.rs` |
+| C2 | Decoder accepts any opcode; truncated input → `None`, never panic; `data_len` above `MAX_MESSAGE_SIZE` (16 MiB) → `None` before slicing/allocating | §2.2; truncation + oversized-length tests in `src/dig_message.rs` |
 | C3 | DIG band is exactly 200–219; dispatch boundary at 200 | §3.1–3.2; range tests in `src/dig_message_type.rs`, boundary test in `src/dig_message.rs` |
 | C4 | `TryFrom<u8>` rejects every non-assigned value with `UnknownDigMessageType` | §3.3; `unknown_rejected` test |
 | C5 | `DigMessageType` serde = raw u8 discriminant | §3.4; serde tests in `src/dig_message_type.rs` |
