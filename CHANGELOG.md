@@ -1,0 +1,25 @@
+# Changelog
+
+All notable changes to this project are documented here.
+This project adheres to [Semantic Versioning](https://semver.org) and
+[Conventional Commits](https://www.conventionalcommits.org).
+
+## [0.1.2] - 2026-07-12
+
+### Testing
+- Cover the remaining decode/serde/error branches
+
+### CI
+- Add coverage gate failing under 80% line coverage- Enforce version increment in PRs (package.json / Cargo.toml)- Enforce Conventional Commits with commitlint on PRs- Enforce Conventional Commits with commitlint on PRs- Release automation (git-cliff changelog + tag on merge); publish is manual workflow_dispatch (#230)- Re-arm crates.io auto-publish on version tag (token in org secrets; auto-publish-everything #230)- Add flaky-test management (#489) (#2)
+
+### Chores
+- **changelog:** Add git-cliff config for Conventional-Commit changelog
+
+## [0.1.1] - 2026-04-16
+
+### Documentation
+- Expand README with full public API reference
+
+## [0.1.0] - 2026-04-16
+
+
