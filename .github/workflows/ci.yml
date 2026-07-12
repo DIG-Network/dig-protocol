@@ -26,14 +26,24 @@ jobs:
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
       - name: Check clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Run tests
-        run: cargo test --all-features -- --test-threads=1
+      # cargo-nextest with retries (.config/nextest.toml, #489): a genuinely-flaky
+      # test gets retried instead of red-flagging the whole PR, while retries are
+      # still reported in the run output so real flakiness stays visible.
+      - name: Run tests (nextest, flaky-retry)
+        run: cargo nextest run --all-features
+
+      # Doctests aren't run by nextest — keep them on plain cargo test.
+      - name: Run doctests
+        run: cargo test --doc --all-features
 
       - name: Check documentation
         run: cargo doc --no-deps --all-features
@@ -57,19 +67,28 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
       # The crate's own logic (DigMessage / DigMessageType / introducer wire types)
       # is feature-independent — the `native-tls` / `rustls` features only forward
       # TLS re-exports from chia-sdk-client (pure glue with no coverable lines here).
       # Measuring default features keeps the gate fast and focused on this crate's code.
       # lib.rs is excluded from the floor: it is re-export-only with no own logic.
-      - name: Run coverage with 80% line floor
+      #
+      # Uses the combined `cargo llvm-cov nextest` form (#489) so llvm-cov drives
+      # nextest directly — coverage instrumentation is still collected AND nextest's
+      # flaky-retry (.config/nextest.toml) still applies. Running `cargo nextest run`
+      # and `cargo llvm-cov` as two separate steps collects ZERO coverage from the
+      # nextest run and fails this gate — do not split them.
+      - name: Run coverage with 80% line floor (nextest)
         run: |
-          cargo llvm-cov \
+          cargo llvm-cov nextest \
             --ignore-filename-regex 'src/lib\.rs' \
             --fail-under-lines 80 \
-            -- --test-threads=1
+            --all-features
 
       - name: Coverage summary
         if: always()
         run: |
-          cargo llvm-cov report --summary-only -- --test-threads=1
+          cargo llvm-cov report --summary-only

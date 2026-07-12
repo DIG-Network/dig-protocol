@@ -15,37 +15,14 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
-    name: Test Suite
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Check clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: Run tests
-        run: cargo test --all-features -- --test-threads=1
-
-      - name: Check documentation
-        run: cargo doc --no-deps --all-features
-
+  # No test/lint job here (#489/#488): the PR gates in ci.yml already tested this
+  # exact tree (branch protection requires up-to-date-with-main + green checks
+  # before merge), so a tag push re-running the full suite is redundant and was
+  # a release-blocker (a flaky re-run could fail a release for code already
+  # proven green on the PR). Publish = build + package + publish only.
   publish:
     name: Publish to crates.io
     runs-on: ubuntu-latest
-    needs: test
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout code
