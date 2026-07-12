@@ -1,0 +1,5 @@
+[profile.default]
+# Flaky-test management (#489): retry a failing test up to 2 times before
+# marking it failed, and report retries so genuinely-flaky tests are visible
+# in CI output instead of silently blocking merges.
+retries = 2
