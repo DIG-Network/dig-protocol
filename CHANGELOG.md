@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.2.0] - 2026-07-19
+
+### Features
+- Add DIG_MESSAGE opcode const (220) for directed dig-message envelopes (#3)
+
 ## [0.1.2] - 2026-07-12
 
 ### Testing
