@@ -4,8 +4,9 @@
 //!
 //! This crate re-exports the entire Chia protocol ecosystem (`chia-protocol`,
 //! `chia-sdk-client`, `chia-ssl`, `chia-traits`) plus DIG-specific extensions
-//! (opcodes 200–219). Consumers depend on `dig-protocol` alone instead of
-//! importing multiple `chia-*` crates individually.
+//! (the `200..=219` consensus opcodes plus [`DIG_MESSAGE`] = 220, the directed
+//! dig-message envelope opcode). Consumers depend on `dig-protocol` alone instead
+//! of importing multiple `chia-*` crates individually.
 //!
 //! ## What's included
 //!
@@ -80,3 +81,38 @@ pub use dig_message_type::{DigMessageType, UnknownDigMessageType};
 pub use introducer_wire::{
     RegisterAck, RegisterPeer, RequestPeersIntroducer, RespondPeersIntroducer,
 };
+
+/// Wire opcode for a directed **dig-message** envelope (WU6, epic #796).
+///
+/// The `200..=219` band is the DIG L2 **consensus** band ([`DigMessageType`]); `220..=255`
+/// is the **free** band for directed application protocols. Opcode **220** carries a
+/// `dig-message` directed envelope as OPAQUE bytes in [`DigMessage::data`] — the transport
+/// (dig-gossip) never seals, opens, or parses it; end-to-end sealing to the recipient's DID
+/// key is `dig-message`'s job.
+///
+/// This is a cross-repo **canonical** constant — it MUST NOT drift. `dig-gossip` mirrors it
+/// as `dig_gossip::DIG_MESSAGE` (and `ProtocolMessageTypes::DigMessage`) for its transport.
+pub const DIG_MESSAGE: u8 = 220;
+
+#[cfg(test)]
+mod dig_message_opcode_tests {
+    use super::{DigMessage, DigMessageType, DIG_MESSAGE};
+
+    /// The opcode frames a real [`DigMessage`] and survives a wire round-trip with its
+    /// `msg_type` intact — the canonical value (220) exercised through the actual encoder.
+    #[test]
+    fn dig_message_opcode_frames_and_round_trips() {
+        let msg = DigMessage::new(DIG_MESSAGE, Some(9), vec![1, 2, 3].into());
+        let back = DigMessage::from_bytes(&msg.to_bytes()).expect("round-trip");
+        assert_eq!(back.msg_type, 220);
+        assert_eq!(back.msg_type, DIG_MESSAGE);
+        assert_eq!(back.data.as_ref(), &[1, 2, 3]);
+    }
+
+    /// 220 is in the free band: it is NOT a consensus `DigMessageType` discriminant, so a
+    /// consensus-band decode of the opcode fails — the two bands can never collide.
+    #[test]
+    fn dig_message_opcode_is_not_a_consensus_type() {
+        assert!(DigMessageType::try_from(DIG_MESSAGE).is_err());
+    }
+}
