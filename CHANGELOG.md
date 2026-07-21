@@ -6,8 +6,8 @@ This project adheres to [Semantic Versioning](https://semver.org) and
 
 ## [0.2.1] - 2026-07-21
 
-### Changed
-- Renamed crate `dig-protocol` → `dig-peer-protocol` (#1383). API unchanged; consumers must switch their dependency name.
+### Refactor
+- **crate:** Rename dig-protocol -> dig-peer-protocol (#1383) (#4)
 
 ## [0.2.0] - 2026-07-19
 
