@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.2.1] - 2026-07-21
+
+### Changed
+- Renamed crate `dig-protocol` → `dig-peer-protocol` (#1383). API unchanged; consumers must switch their dependency name.
+
 ## [0.2.0] - 2026-07-19
 
 ### Features

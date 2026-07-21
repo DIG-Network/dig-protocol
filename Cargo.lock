@@ -699,8 +699,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "dig-protocol"
-version = "0.2.0"
+name = "dig-peer-protocol"
+version = "0.2.1"
 dependencies = [
  "chia-protocol",
  "chia-sdk-client",

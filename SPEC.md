@@ -1,6 +1,6 @@
-# dig-protocol — Normative Specification
+# dig-peer-protocol — Normative Specification
 
-This document is the authoritative contract for the `dig-protocol` crate: the DIG Network
+This document is the authoritative contract for the `dig-peer-protocol` crate: the DIG Network
 L2 P2P message layer. It specifies the wire framing, the DIG opcode namespace (200–219),
 the introducer registration messages, the re-exported Chia protocol surface, and the
 invariants an implementation MUST uphold.
@@ -14,11 +14,11 @@ The README covers usage; this document covers the contract.
 
 ## 1. Scope and role
 
-`dig-protocol` is the single import point for DIG P2P messaging. It:
+`dig-peer-protocol` is the single import point for DIG P2P messaging. It:
 
 1. Re-exports the Chia protocol ecosystem (`chia-protocol`, `chia-sdk-client`,
    `chia-ssl`, `chia-traits`, `chia_streamable_macro`) so consumers depend on
-   `dig-protocol` alone (§6).
+   `dig-peer-protocol` alone (§6).
 2. Defines the DIG opcode band **200–219** as a disjoint extension of Chia's
    `ProtocolMessageTypes` namespace (§3).
 3. Defines `DigMessage`, a framing type that is **byte-identical on the wire** to
@@ -244,7 +244,7 @@ the upstream Chia introducer protocol.
 
 ## 6. Re-exported surface (public API contract)
 
-Consumers MUST be able to obtain the following through `dig_protocol::*` without
+Consumers MUST be able to obtain the following through `dig_peer_protocol::*` without
 importing the underlying crates:
 
 | Source crate | Re-exported |
@@ -268,7 +268,7 @@ a breaking change to every consumer; additions are non-breaking.
 | `rustls` | off | forwards to `chia-sdk-client/rustls`; enables `Client`, `ClientState`, `Connector`, `create_rustls_connector` |
 
 With neither feature the crate MUST still build; only the TLS-dependent re-exports are
-absent. Consumers select a TLS backend on `dig-protocol` rather than depending on
+absent. Consumers select a TLS backend on `dig-peer-protocol` rather than depending on
 `chia-sdk-client` directly.
 
 The crate has no runtime configuration; it defines types only.
@@ -309,7 +309,7 @@ The crate has no runtime configuration; it defines types only.
 | C5 | `DigMessageType` serde = raw u8 discriminant | §3.4; serde tests in `src/dig_message_type.rs` |
 | C6 | `RegisterPeer` = (`ip: String`, `port: u16`, `node_type: NodeType`) at opcode 218; `RegisterAck` = (`success: bool`) at 219; wrong opcode → `None`, corrupt body → `Err`; `success=false` is valid | §4; round-trip + decode-error tests in `src/introducer_wire.rs` |
 | C7 | Opcodes 63/64 remain Chia-`ProtocolMessageTypes`-compatible `#[streamable(message)]` types | §5; streamable round-trip tests |
-| C8 | Re-export surface of §6 available from `dig_protocol` alone; TLS items gated by `native-tls`/`rustls` | §6–7; `src/lib.rs` |
+| C8 | Re-export surface of §6 available from `dig_peer_protocol` alone; TLS items gated by `native-tls`/`rustls` | §6–7; `src/lib.rs` |
 | C9 | `unsafe_code` denied; no panics on malformed wire input | §8; `Cargo.toml` lints, decode tests |
 
 Peer implementations (any language) MUST reproduce C1–C6 byte-for-byte to interoperate

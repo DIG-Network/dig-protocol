@@ -1,4 +1,4 @@
-# dig-protocol
+# dig-peer-protocol
 
 DIG Network L2 protocol types — superset of [`chia-protocol`](https://crates.io/crates/chia-protocol) with extension opcodes **200–219**.
 
@@ -10,7 +10,7 @@ One dependency replaces five: `chia-protocol`, `chia-sdk-client`, `chia-ssl`, `c
 
 ```toml
 [dependencies]
-dig-protocol = { version = "0.1", features = ["rustls"] }
+dig-peer-protocol = { version = "0.2", features = ["rustls"] }
 ```
 
 ### Features
@@ -311,7 +311,7 @@ pub use chia_streamable_macro::streamable;   // #[streamable] / #[streamable(mes
 ## Encode / decode example
 
 ```rust
-use dig_protocol::{DigMessage, DigMessageType, NodeType, RegisterPeer, RegisterAck};
+use dig_peer_protocol::{DigMessage, DigMessageType, NodeType, RegisterPeer, RegisterAck};
 
 // --- Encode outbound RegisterPeer ---
 let rp = RegisterPeer::new("1.2.3.4".into(), 9444, NodeType::FullNode);
