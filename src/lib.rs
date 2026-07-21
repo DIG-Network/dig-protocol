@@ -1,11 +1,11 @@
-//! # dig-protocol
+//! # dig-peer-protocol
 //!
 //! DIG Network L2 protocol types — a superset of `chia-protocol`.
 //!
 //! This crate re-exports the entire Chia protocol ecosystem (`chia-protocol`,
 //! `chia-sdk-client`, `chia-ssl`, `chia-traits`) plus DIG-specific extensions
 //! (the `200..=219` consensus opcodes plus [`DIG_MESSAGE`] = 220, the directed
-//! dig-message envelope opcode). Consumers depend on `dig-protocol` alone instead
+//! dig-message envelope opcode). Consumers depend on `dig-peer-protocol` alone instead
 //! of importing multiple `chia-*` crates individually.
 //!
 //! ## What's included

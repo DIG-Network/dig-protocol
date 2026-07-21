@@ -73,18 +73,18 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GH_ACCESS_TOKEN }}
         with:
           tag_name: ${{ github.ref }}
-          release_name: "dig-gossip v${{ steps.extract_version.outputs.VERSION }}"
+          release_name: "dig-peer-protocol v${{ steps.extract_version.outputs.VERSION }}"
           body: |
-            ## dig-gossip v${{ steps.extract_version.outputs.VERSION }}
+            ## dig-peer-protocol v${{ steps.extract_version.outputs.VERSION }}
 
-            DIG Network P2P gossip — peer discovery, connection management, and message routing with Plumtree, ERLAY, priority lanes, compact blocks, Dandelion++, and relay fallback.
+            DIG Network L2 protocol types — a superset of chia-protocol.
 
             ### Installation
             ```toml
             [dependencies]
-            dig-gossip = "${{ steps.extract_version.outputs.VERSION }}"
+            dig-peer-protocol = "${{ steps.extract_version.outputs.VERSION }}"
             ```
 
-            See the [README](https://github.com/DIG-Network/dig-gossip/blob/main/README.md) for usage instructions.
+            See the [README](https://github.com/DIG-Network/dig-peer-protocol/blob/main/README.md) for usage instructions.
           draft: false
           prerelease: false
